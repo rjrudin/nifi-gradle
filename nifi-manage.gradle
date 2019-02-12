@@ -1,0 +1,130 @@
+ext {
+	nifiManageGroup = "NiFi Management"
+
+	// Uncomment these if NiFi is using TLS
+//	def sslContextBuilder = new SSLContextBuilder()
+//	def sslContext = sslContextBuilder.buildSSLContext(nifiKeyStorePath, nifiKeyStorePassword, nifiServerCertificatePath)
+//	def hostnameVerifier = sslContextBuilder.buildNullHostnameVerifier()
+//	nifiClient = new NifiClient(nifiHost, Integer.parseInt(nifiPort), nifiScheme, sslContext, hostnameVerifier)
+
+	nifiClient = new NifiClient(nifiHost, Integer.parseInt(nifiPort))
+}
+
+task printFlowId() {
+	description = "This allows for quick verification of the connection to the NiFi REST API"
+	doLast {
+		println "Flow ID: " + nifiClient.getFlowId()
+	}
+}
+
+task exportTemplate {
+	description = "Run this while developing a process group locally to export it as an XML template file, suitable for storing in version control"
+	group = nifiManageGroup
+	doLast {
+		nifiClient.exportTemplate(processGroup)
+	}
+}
+
+task uploadTemplate {
+	description = "Upload an XML template, but do not yet create a process group from it"
+	group = nifiManageGroup
+	doLast {
+		nifiClient.uploadTemplate(new File(templatePath))
+		println "Uploaded template from: " + templatePath
+	}
+}
+
+task createProcessGroupFromTemplate (dependsOn: uploadTemplate) {
+	description = "Upload an XML template and create a new process group from it"
+	group = nifiManageGroup
+	doLast {
+		def templateFile = new File(templatePath)
+		def templateName = nifiClient.getTemplateNameFromFile(templateFile)
+		def templateId = nifiClient.getTemplateId(templateName)
+		def response = nifiClient.instantiateTemplate(templateId)
+		def processGroupId = response.flow.processGroups[0].id
+		println "Deployed template from ${templatePath} and created process group with ID: " + processGroupId
+	}
+}
+
+// This task is specific to a template that involves DHF and has a StagingDatabaseClient and a FinalDatabaseClient
+// Customize this as needed, or discard if not needed - though it's recommended to set passwords this way since
+// process group variables must be stored as plaintext
+task setPasswordOnDatabaseClients {
+	description = "The two DatabaseClient services both need passwords set on them before they can be enabled"
+	group = nifiManageGroup
+	mustRunAfter createProcessGroupFromTemplate
+	doLast {
+		def processGroupId = nifiClient.getProcessGroupId(nifiClient.getFlowId(), processGroup)
+		def properties = { "Password" nifiMarkLogicPassword }
+		["StagingDatabaseClient", "FinalDatabaseClient"].each { controllerServiceName ->
+			def controllerServiceId = nifiClient.getControllerServiceId(processGroupId, controllerServiceName)
+			println "Updating properties for controller service: ${controllerServiceName}"
+			nifiClient.updateControllerService(controllerServiceId, properties)
+		}
+	}
+}
+
+// Customize this task as needed to update all the variables associated with your process group
+task updateVariables {
+	description = "Update the variables for a process group based on the environment that it's been deployed to"
+	group = nifiManageGroup
+	mustRunAfter createProcessGroupFromTemplate
+	doLast {
+		println "Updating variables for process group ${processGroup}"
+		nifiClient.updateVariables(processGroup, [
+						MarkLogicHost: nifiMarkLogicHost,
+						MarkLogicUsername: nifiMarkLogicUsername
+		])
+		println "Finished updating variables for process group ${processGroup}"
+	}
+}
+
+task enableControllerServices {
+	description = "Enables all controller services in a process group. Should be done after a process group is created from a template."
+	group = nifiManageGroup
+	mustRunAfter setPasswordOnDatabaseClients
+	mustRunAfter updateVariables
+	doLast {
+		nifiClient.enableControllerServices(nifiClient.getProcessGroupId(nifiClient.getFlowId(), processGroup))
+	}
+}
+
+task deployTemplate {
+	description = "Upload a template, create a new process group from it, set the passwords on the DatabaseClients, and then enable the controller services"
+	group = nifiManageGroup
+	dependsOn = ["createProcessGroupFromTemplate", "setPasswordOnDatabaseClients", "updateVariables", "enableControllerServices"]
+}
+
+task stopProcessGroup {
+	group = nifiManageGroup
+	doLast {
+		nifiClient.stopProcessGroup(nifiClient.getProcessGroupId(nifiClient.getFlowId(), processGroup))
+	}
+}
+
+task startProcessGroup {
+	group = nifiManageGroup
+	doLast {
+		println "Starting process group ${processGroup}"
+		nifiClient.startProcessGroup(nifiClient.getProcessGroupId(nifiClient.getFlowId(), processGroup))
+		println "Started process group ${processGroup}"
+	}
+}
+
+task disableControllerServices {
+	group = nifiManageGroup
+	doLast {
+		println "Stopping process group ${processGroup}"
+		nifiClient.disableControllerServices(nifiClient.getProcessGroupId(nifiClient.getFlowId(), processGroup))
+		println "Stopped process group ${processGroup}"
+	}
+}
+
+task deleteTemplates {
+	description = "Convenience task for deleting all templates whose name starts with the given process group name; useful for cleaning up a NiFi instance"
+	group = nifiManageGroup
+	doLast {
+		nifiClient.deleteTemplatesStartingWith(processGroup)
+	}
+}

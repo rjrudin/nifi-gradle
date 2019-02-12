@@ -1,0 +1,8 @@
+repositories {
+	jcenter()
+}
+
+dependencies {
+	compile "com.jayway.jsonpath:json-path:2.4.0"
+	compile "io.github.http-builder-ng:http-builder-ng-okhttp:1.0.3"
+}
